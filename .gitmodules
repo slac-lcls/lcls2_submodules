@@ -1,0 +1,39 @@
+[submodule "cameralink-gateway"]
+	path = cameralink-gateway
+	url = git@github.com:slaclab/cameralink-gateway
+[submodule "epix"]
+	path = epix
+	url = git@github.com:slaclab/epix
+[submodule "epix-100a-gen2"]
+	path = epix-100a-gen2
+	url = git@github.com:slaclab/epix-100a-gen2
+[submodule "epix-hr-m-320k"]
+	path = epix-hr-m-320k
+	url = git@github.com:slaclab/epix-hr-m-320k
+[submodule "epix-hr-single-10k"]
+	path = epix-hr-single-10k
+	url = git@github.com:slaclab/epix-hr-single-10k
+[submodule "epix-quad"]
+	path = epix-quad
+	url = git@github.com:slaclab/epix-quad
+[submodule "epix-uhr-gtreadout-dev"]
+	path = epix-uhr-gtreadout-dev
+	url = git@github.com:slaclab/epix-uhr-gtreadout-dev
+[submodule "high-rate-encoder-dev"]
+	path = high-rate-encoder-dev
+	url = git@github.com:slaclab/high-rate-encoder-dev
+[submodule "l2si-drp"]
+	path = l2si-drp
+	url = git@github.com:slaclab/l2si-drp
+[submodule "lcls2-epix-hr-pcie"]
+	path = lcls2-epix-hr-pcie
+	url = git@github.com:slaclab/lcls2-epix-hr-pcie
+[submodule "lcls2-pgp-pcie-apps"]
+	path = lcls2-pgp-pcie-apps
+	url = git@github.com:slaclab/lcls2-pgp-pcie-apps
+[submodule "lcls2-timetool"]
+	path = lcls2-timetool
+	url = git@github.com:slaclab/lcls2-timetool
+[submodule "lcls2-udp-pcie-apps"]
+	path = lcls2-udp-pcie-apps
+	url = git@github.com:slaclab/lcls2-udp-pcie-apps
