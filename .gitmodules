@@ -1,9 +1,6 @@
 [submodule "cameralink-gateway"]
 	path = cameralink-gateway
 	url = git@github.com:slaclab/cameralink-gateway
-[submodule "epix"]
-	path = epix
-	url = git@github.com:slaclab/epix
 [submodule "epix-100a-gen2"]
 	path = epix-100a-gen2
 	url = git@github.com:slaclab/epix-100a-gen2
