@@ -34,3 +34,6 @@
 [submodule "lcls2-udp-pcie-apps"]
 	path = lcls2-udp-pcie-apps
 	url = git@github.com:slaclab/lcls2-udp-pcie-apps
+[submodule "epix-quad-1kfps"]
+	path = epix-quad-1kfps
+	url = git@github.com:slaclab/epix-quad-1kfps.git
