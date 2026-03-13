@@ -7,3 +7,5 @@ sed -i "s/^rogue.Version.minVersion('6.4.0')/#rogue.Version.minVersion('6.4.0')/
           lcls2-pgp-pcie-apps/firmware/python/lcls2_pgp_pcie_apps/_DevRoot.py
 sed -i "s/^rogue.Version.minVersion('6.4.0')/#rogue.Version.minVersion('6.4.0')/" \
           cameralink-gateway/firmware/python/cameralink_gateway/_ClinkDevRoot.py
+sed -i "s/^ZmqServer(root=self, addr='127.0.0.1', port=10000)'/#ZmqServer(root=self, addr='127.0.0.1', port=0)/" \
+	  l2si-drp/firmware/python/l2si_drp/_Root.py 
