@@ -10,4 +10,7 @@ sed -i "s/^rogue.Version.minVersion('6.4.0')/#rogue.Version.minVersion('6.4.0')/
           cameralink-gateway/firmware/python/cameralink_gateway/_ClinkDevRoot.py
 sed -i "s/ZmqServer(root=self, addr='127.0.0.1', port=10000)/ZmqServer(root=self, addr='127.0.0.1', port=0)/" \
 	  l2si-drp/firmware/python/l2si_drp/_Root.py
-
+sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/" \
+          epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/_Root.py
+sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/" \
+          epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/Uhr3x2ReadoutSystem/_Uhr3x2ReadoutSystem.py
