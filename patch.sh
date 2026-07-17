@@ -14,3 +14,18 @@ sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/"
           epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/_Root.py
 sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/" \
           epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/Uhr3x2ReadoutSystem/_Uhr3x2ReadoutSystem.py
+
+# Further ePixUHR3x2 -- Python 3.10 incompatibilties
+sed -Ei 's/^(def get_carrier_name\(serial_number: int\)) -> .*$/\1:/'                           \
+    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
+sed -Ei 's/^(def get_carrier_id\(serial_number: int\)) -> .*$/\1:/'                             \
+    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
+sed -Ei 's/^(def get_carrier_doc_url\(serial_number: int\)) -> .*$/\1:/'                        \
+    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
+
+sed -Ei 's/^(def get_readout_name\(serial_number: int\)) -> .*$/\1:/'                           \
+        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
+sed -Ei 's/^(def get_readout_id\(serial_number: int\)) -> .*$/\1:/'                             \
+        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
+sed -Ei 's/^(def get_readout_doc_url\(serial_number: int\)) -> .*$/\1:/'                        \
+        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
