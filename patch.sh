@@ -1,3 +1,16 @@
+cd lcls2-udp-pcie-apps
+git apply --ignore-whitespace ../pr_patches/lcls2_udp_pcie_apps.diff
+cd ..
+cd lcls2-pgp-pcie-apps
+git apply --ignore-whitespace ../pr_patches/lcls2_pgp_pcie_apps.diff
+cd ..
+cd lcls2-epix-hr-pcie
+git apply --ignore-whitespace ../pr_patches/lcls2_epix_hr_pcie.diff
+cd ..
+cd cameralink-gateway
+git apply --ignore-whitespace ../pr_patches/cameralink_gateway.diff
+cd ..
+
 sed -i '25s/^rogue.Version.exactVersion/#rogue.Version.exactVersion/' high-rate-encoder-dev/firmware/python/high_rate_encoder_dev/_Root.py
 sed -i '313s/ raise ValueError(errMsg)/#raise ValueError(errMsg)/' cameralink-gateway/firmware/python/cameralink_gateway/_ClinkDevRoot.py 
 
@@ -29,3 +42,4 @@ sed -Ei 's/^(def get_readout_id\(serial_number: int\)) -> .*$/\1:/'             
         epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
 sed -Ei 's/^(def get_readout_doc_url\(serial_number: int\)) -> .*$/\1:/'                        \
         epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
+

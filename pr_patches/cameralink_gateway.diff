@@ -1,0 +1,1726 @@
+diff --git a/firmware/python/cameralink_gateway/_ClinkDevRoot.py b/firmware/python/cameralink_gateway/_ClinkDevRoot.py
+index e68efbd..a3f15b3 100644
+--- a/firmware/python/cameralink_gateway/_ClinkDevRoot.py
++++ b/firmware/python/cameralink_gateway/_ClinkDevRoot.py
+@@ -310,7 +310,7 @@ class ClinkDevRoot(shared.Root):
+                     https://github.com/slaclab/lcls2-pgp-pcie-apps/blob/master/firmware/targets/shared_config.mk
+                     """
+                 click.secho(errMsg, bg='red')
+-                raise ValueError(errMsg)
++               #raise ValueError(errMsg)
+ 
+             # Check for FEB FW version
+             for lane in self.laneConfig:
+diff --git a/firmware/python/cameralink_gateway/_ClinkPcieFpga.py b/firmware/python/cameralink_gateway/_ClinkPcieFpga.py
+index dd3a957..46f52fd 100644
+--- a/firmware/python/cameralink_gateway/_ClinkPcieFpga.py
++++ b/firmware/python/cameralink_gateway/_ClinkPcieFpga.py
+@@ -12,6 +12,7 @@ import pyrogue as pr
+ 
+ import axipcie                 as pcie
+ import lcls2_pgp_fw_lib.shared as shared
++import cameralink_gateway      as dev
+ 
+ class ClinkPcieFpga(pr.Device):
+     def __init__(self,
+@@ -27,8 +28,10 @@ class ClinkPcieFpga(pr.Device):
+         self.add(pcie.AxiPcieCore(
+             offset      = 0x0000_0000,
+             numDmaLanes = 4,
+-            boardType   = boardType,
++            #boardType   = boardType,
++            boardType   = None,
+             expand      = False,
++            extended    = True
+         ))
+ 
+         # Application layer
+@@ -38,6 +41,13 @@ class ClinkPcieFpga(pr.Device):
+             expand     = True,
+         ))
+ 
++        # I2CBus 
++        self.add(dev.I2CBus(
++            offset      = 0x0007_0000,
++            expand      = False,
++            enabled     = True
++        ))
++
+         # Hardware Layer
+         self.add(shared.Hsio(
+             name       = 'Hsio',
+diff --git a/firmware/python/cameralink_gateway/_I2CBus.py b/firmware/python/cameralink_gateway/_I2CBus.py
+new file mode 100644
+index 0000000..44c01cd
+--- /dev/null
++++ b/firmware/python/cameralink_gateway/_I2CBus.py
+@@ -0,0 +1,74 @@
++#!/usr/bin/env python3
++##############################################################################
++## This file is part of 'EPIX'.
++## It is subject to the license terms in the LICENSE.txt file found in the 
++## top-level directory of this distribution and at: 
++##    https://confluence.slac.stanford.edu/display/ppareg/LICENSE.html. 
++## No part of 'EPIX', including this file, 
++## may be copied, modified, propagated, or distributed except according to 
++## the terms contained in the LICENSE.txt file.
++##############################################################################
++
++import pyrogue as pr
++
++from surf.devices.transceivers import Qsfp
++from surf.devices.transceivers import Sfp
++import surf.devices.silabs as silabs
++from cameralink_gateway._Si570 import Si570
++
++import struct
++import time
++
++class I2CBus(pr.Device):
++    def __init__(self,
++                 name        = 'I2CBus',
++                 description = 'Local bus',
++                 qsa         = False,
++                 **kwargs):
++        super().__init__(
++            name        = name,
++            description = description,
++            **kwargs
++        )
++
++        self.add(pr.RemoteVariable(
++            name      = 'select',
++            offset    = 0x0,
++            bitSize   = 8,
++            verify    = False,
++            mode      = 'RW',
++            enum = {
++                0x00: 'None',
++                0x02: 'QSFP1',
++                0x04: 'SI570',
++                0x08: 'Fan',
++                0x10: 'QSFP0',
++                0x20: 'EEPROM',
++            }
++        ))
++
++        if qsa:
++            self.add(Sfp(
++                name   = 'SFP',
++                offset = 0xc00
++            ))
++        else:
++            self.add(Qsfp(
++                name   = 'QSFP',
++                offset = 0x400,
++                enabled = False
++            ))
++
++        self.add(Si570(
++            factory_freq = 156.25,
++            name   = 'Si570',
++            offset = 0x800,
++            enabled = False
++        ))
++
++    def programSi570(self, f):
++        
++        self.select.set(0x04)
++        self.Si570.enable.set(True)
++
++        self.Si570.set_freq(None,None,f)
+diff --git a/firmware/python/cameralink_gateway/_Si570.py b/firmware/python/cameralink_gateway/_Si570.py
+new file mode 100644
+index 0000000..00eb2c9
+--- /dev/null
++++ b/firmware/python/cameralink_gateway/_Si570.py
+@@ -0,0 +1,246 @@
++#-----------------------------------------------------------------------------
++# This file is part of 'SLAC Firmware Standard Library'.
++# It is subject to the license terms in the LICENSE.txt file found in the
++# top-level directory of this distribution and at:
++#    https://confluence.slac.stanford.edu/display/ppareg/LICENSE.html.
++# No part of 'SLAC Firmware Standard Library', including this file,
++# may be copied, modified, propagated, or distributed except according to
++# the terms contained in the LICENSE.txt file.
++#-----------------------------------------------------------------------------
++
++#
++#  changes: 
++#    Need verify=False on RemoteVariables; 
++#    fxtal is not variable (can only be calculated during factory reset)
++#    frequency can only be set, never retrieved
++#
++
++import pyrogue as pr
++import time
++
++class Si570(pr.Device):
++    def __init__(self, factory_freq, **kwargs):
++        super().__init__(**kwargs)
++        self.factory_freq = factory_freq
++
++        ADDR_SIZE = 4
++
++        for i in range(7, 13):
++            self.add(pr.RemoteVariable(
++                name = f'Config[{i}]',
++                description = 'Entire configuration space as an array of registers',
++                offset = i * ADDR_SIZE,
++                bitOffset = 0,
++                bitSize = 8,
++                hidden = True,
++                overlapEn = True,
++                verify = False,
++            ))
++
++        # Extract N1 register value
++        def n1_raw_get(read):
++            high = self.Config[7].get(read=read)
++            low = self.Config[8].get(read=read)
++            return ((high & 0x1f) << 2) | ((low & 0xc0) >> 6)
++
++        def n1_raw_set(value, write):
++            high = self.Config[7].value() & 0xe0
++            low = self.Config[8].value() & 0x1f
++
++            high |= (value & 0b01111100) >> 2
++            low |= (value & 0x3) << 6
++
++            self.Config[7].set(high, write=False)
++            self.Config[8].set(low, write=False)
++            self.writeAndVerifyBlocks()
++
++        self.add(pr.LinkVariable(
++            name = 'N1_RAW',
++            dependencies = [self.Config[7], self.Config[8]],
++            hidden = True,
++            linkedGet = n1_raw_get,
++            linkedSet = n1_raw_set))
++
++        self.add(pr.LinkVariable(
++            name = 'N1',
++            description = """
++            Sets the value for CLKOUT output divider.
++            Can be 1 or any even number up to 128.
++            Value will be formatted for register as described on datasheet page 23""",
++            dependencies = [self.N1_RAW],
++            linkedGet = lambda read: self.N1_RAW.get(read=read) + 1,
++            linkedSet = lambda value, write: self.N1_RAW.set(value-1, write=write)))
++
++        # Enum for HS_DIV
++        self.add(pr.RemoteVariable(
++            name = 'HS_DIV',
++            description = 'Sets value for high speed divider that takes the DCO output fOSC as its clock input',
++            overlapEn = True,
++            offset = 7 * ADDR_SIZE,
++            bitSize = 3,
++            bitOffset = 5,
++            enum = {
++                0: '4',
++                1: '5',
++                2: '6',
++                3: '7',
++                5: '9',
++                7: '11'},
++            verify = False,
++        ))
++
++        # Map enum to link variable for setting as int
++        self.add(pr.LinkVariable(
++            name = 'HS_DIV_INT',
++            description = 'Sets value for high speed divider that takes the DCO output fOSC as its clock input',
++            hidden = True,
++            dependencies = [self.HS_DIV],
++            linkedGet = lambda read: int(self.HS_DIV.getDisp(read=read)),
++            linkedSet = lambda value, write: self.HS_DIV.setDisp(str(value))))
++
++        # Extract RFREQ from registers
++        def rfreq_raw_get(read):
++            ret = 0
++            for i in range(8, 13):
++                ret = ret << 8 | self.Config[i].get(read=read)
++
++            ret &= 0x1fffffffff
++            return ret
++
++        def rfreq_raw_set(value, write):
++            tmp = value
++            for i in reversed(range(8, 13)):
++                if i == 8:
++                    old = self.Config[i].get(read=False)
++                    tmp = (tmp & 0x1f) | (old & 0xc0)
++                self.Config[i].set(tmp&0xFF, write=write)
++                tmp = tmp >> 8
++
++        self.add(pr.LinkVariable(
++            name = 'RFREQ_RAW',
++            description = 'Frequency control input to DCO',
++            disp = '0x{:x}',
++            hidden = True,
++            dependencies = [self.Config[x] for x in range(8,13)],
++            linkedGet = rfreq_raw_get,
++            linkedSet = rfreq_raw_set))
++
++
++        self.add(pr.LinkVariable(
++            name = 'RFREQ',
++            description = 'Frequency control input to DCO, formatted from fixed point',
++            dependencies = [self.RFREQ_RAW],
++            linkedGet = lambda read: self.RFREQ_RAW.get(read=read) / 2**28,
++            linkedSet = lambda value, write: self.RFREQ_RAW.set(int(value*2**28), write=write)))
++
++        self.add(pr.RemoteCommand(
++            name = 'RST_REG',
++            description = """
++            Reset of all internal logic. Output tristated during reset.
++            Automatically returns to 0 after reset completion.
++            Interrupts I2C state machine. Not recommended to use""",
++            offset = 135 * ADDR_SIZE,
++            bitOffset = 7,
++            bitSize = 1,
++            hidden = True,
++            function = pr.Command.touchOne))
++
++        self.add(pr.RemoteCommand(
++            name = 'NewFreq',
++            description = 'Alerts the DSPLL that a new frequency configuration has been applied',
++            offset = 135 * ADDR_SIZE,
++            bitOffset = 6,
++            bitSize = 1,
++            hidden = True,
++            function = pr.Command.touchOne))
++
++        self.add(pr.RemoteVariable(
++            name = 'FreezeM',
++            description = 'Prevents interim frequency changes when writing RFREQ registers',
++            offset = 135 * ADDR_SIZE,
++            bitOffset = 5,
++            bitSize = 1,
++            hidden = True,
++            base = pr.UInt,
++            verify = False,
++        ))
++
++        self.add(pr.RemoteCommand(
++            name = 'RECALL',
++            description = """
++            Write NVM bits into RAM.
++            Effectively resets the chip without interrupting I2C""",
++            offset = 135 * ADDR_SIZE,
++            bitOffset = 0,
++            bitSize = 1,
++            function = pr.Command.touchOne))
++
++        self.add(pr.RemoteVariable(
++            name = 'FreezeDCO',
++            description = 'Freezes the DSPLL so the frequency configuration can be modified',
++            hidden = True,
++            offset = 137 * ADDR_SIZE,
++            bitSize = 1,
++            bitOffset = 4,
++            verify = False,
++        ))
++
++        self.add(pr.LocalCommand(
++            name = 'SetFrequency',
++            description = """
++            Set the frequency in MHz.
++            Automatically calculates all register values and performs the frequency update procedure described in the datasheet""",
++            units = 'MHz',
++            value = 0.,
++            function = self.set_freq))
++
++    def set_freq(self, dev, cmd, arg):
++
++        value = arg
++        write = True
++
++        def get_fxtal(read):
++            rfreq =  self.RFREQ.get(read)
++            if rfreq == 0:
++                return 0.0
++            else:
++                return self.factory_freq * self.HS_DIV_INT.get(read=read) * self.N1.get(read=read) / rfreq
++
++        n1_array = [1] + [x for x in range(2, 2**7, 2)]
++        hs_div_array = [11, 9, 7, 6, 5, 4]
++
++        def find_params(f1):
++            # want low N1 and high HS_DIV
++            for n1 in n1_array:
++                for hs_div in hs_div_array:
++                    fdco = f1 * hs_div * n1
++                    if 4850 < fdco < 5670:
++                        return n1, hs_div
++
++        self.RECALL()
++        v = 1
++        while (v&1):
++            time.sleep(1.e-3)
++            v = self.RST_REG.get()
++
++        with self.root.updateGroup():
++            n1, hs_div = find_params(value)
++            fdco = value * hs_div * n1
++            rfreq = fdco / get_fxtal(read=True)
++
++            # Freeze
++            self.FreezeDCO.set(1, write=True)
++
++            # Write new config
++            self.N1.set(n1, write=False)
++            self.HS_DIV_INT.set(hs_div, write=False)
++            self.RFREQ.set(rfreq, write=False)
++            self.writeAndVerifyBlocks()
++
++            # Unfreeze
++            self.FreezeDCO.set(0, write=True)
++
++            # NewFreq
++            self.NewFreq()
++
++
+diff --git a/firmware/python/cameralink_gateway/__init__.py b/firmware/python/cameralink_gateway/__init__.py
+index cc801e0..2a8c1a0 100644
+--- a/firmware/python/cameralink_gateway/__init__.py
++++ b/firmware/python/cameralink_gateway/__init__.py
+@@ -13,3 +13,5 @@ sys.path.append(os.path.dirname(os.path.realpath(__file__)))
+ 
+ from cameralink_gateway._ClinkPcieFpga import *
+ from cameralink_gateway._ClinkDevRoot  import *
++from cameralink_gateway._I2CBus        import *
++from cameralink_gateway._Si570         import *
+Submodule firmware/submodules/axi-pcie-core contains modified content
+diff --git a/firmware/submodules/axi-pcie-core/python/axipcie/_AxiPcieCore.py b/firmware/submodules/axi-pcie-core/python/axipcie/_AxiPcieCore.py
+index 54be1cb..ab3671e 100644
+--- a/firmware/submodules/axi-pcie-core/python/axipcie/_AxiPcieCore.py
++++ b/firmware/submodules/axi-pcie-core/python/axipcie/_AxiPcieCore.py
+@@ -28,6 +28,7 @@ class AxiPcieCore(pr.Device):
+                  useSpi      = False,
+                  numDmaLanes = 1,
+                  boardType   = None,
++                 extended    = False,
+                  sim         = False,
+                  **kwargs):
+         super().__init__(description=description, **kwargs)
+@@ -86,67 +87,68 @@ class AxiPcieCore(pr.Device):
+                         hidden       =  True,
+                     ))
+ 
+-            # I2C access is slow.  So using a AXI-Lite proxy to prevent holding up CPU during a BAR0 memory map transaction
+-            self.add(axi.AxiLiteMasterProxy(
+-                name   = 'AxilBridge',
+-                offset = 0x70000,
+-            ))
+-
+-            # Check for the SLAC GEN4 PGP Card
+-            if (boardType == 'SlacPgpCardG4'):
++            if not (extended):
++                # I2C access is slow.  So using a AXI-Lite proxy to prevent holding up CPU during a BAR0 memory map transaction
++                self.add(axi.AxiLiteMasterProxy(
++                    name   = 'AxilBridge',
++                    offset = 0x70000,
++                ))
+ 
+-                for i in range(2):
+-                    self.add(xceiver.Qsfp(
+-                        name    = f'Qsfp[{i}]',
+-                        offset  = i*0x1000+0x70000,
+-                        memBase = self.AxilBridge.proxy,
+-                        enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
++                # Check for the SLAC GEN4 PGP Card
++                if (boardType == 'SlacPgpCardG4'):
++
++                    for i in range(2):
++                        self.add(xceiver.Qsfp(
++                            name    = f'Qsfp[{i}]',
++                            offset  = i*0x1000+0x70000,
++                            memBase = self.AxilBridge.proxy,
++                            enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
++                        ))
++
++                    self.add(xceiver.Sfp(
++                        name        = 'Sfp',
++                        offset      = 0x72000,
++                        memBase     = self.AxilBridge.proxy,
++                        enabled     = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+                     ))
+ 
+-                self.add(xceiver.Sfp(
+-                    name        = 'Sfp',
+-                    offset      = 0x72000,
+-                    memBase     = self.AxilBridge.proxy,
+-                    enabled     = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+-                ))
++                    self.add(nxp.Sa56004x(
++                        name        = 'BoardTemp',
++                        description = 'This device monitors the board temperature and FPGA junction temperature',
++                        offset      = 0x73000,
++                        memBase     = self.AxilBridge.proxy,
++                        enabled     = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
++                    ))
+ 
+-                self.add(nxp.Sa56004x(
+-                    name        = 'BoardTemp',
+-                    description = 'This device monitors the board temperature and FPGA junction temperature',
+-                    offset      = 0x73000,
+-                    memBase     = self.AxilBridge.proxy,
+-                    enabled     = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+-                ))
++                elif (boardType == 'XilinxKcu1500'):
+ 
+-            elif (boardType == 'XilinxKcu1500'):
++                    qsfpOffset = [0x74_000,0x71_000]
+ 
+-                qsfpOffset = [0x74_000,0x71_000]
++                    for i in range(2):
++                        self.add(xceiver.Qsfp(
++                            name    = f'Qsfp[{i}]',
++                            offset  = qsfpOffset[i],
++                            memBase = self.AxilBridge.proxy,
++                            enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
++                        ))
+ 
+-                for i in range(2):
+-                    self.add(xceiver.Qsfp(
+-                        name    = f'Qsfp[{i}]',
+-                        offset  = qsfpOffset[i],
+-                        memBase = self.AxilBridge.proxy,
+-                        enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+-                    ))
++                elif (boardType == 'XilinxAlveoU200') or (boardType == 'XilinxAlveoU250'):
+ 
+-            elif (boardType == 'XilinxAlveoU200') or (boardType == 'XilinxAlveoU250'):
++                    for i in range(2):
++                        self.add(xceiver.Qsfp(
++                            name    = f'Qsfp[{i}]',
++                            offset  = i*0x1000+0x70000,
++                            memBase = self.AxilBridge.proxy,
++                            enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
++                        ))
+ 
+-                for i in range(2):
+-                    self.add(xceiver.Qsfp(
+-                        name    = f'Qsfp[{i}]',
+-                        offset  = i*0x1000+0x70000,
++                elif (boardType == 'XilinxAlveoU55c') or (boardType == 'XilinxVariumC1100'):
++                    self.add(silabs.Si5394(
++                        offset  = 0x70000,
+                         memBase = self.AxilBridge.proxy,
+                         enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+                     ))
+ 
+-            elif (boardType == 'XilinxAlveoU55c') or (boardType == 'XilinxVariumC1100'):
+-                self.add(silabs.Si5394(
+-                    offset  = 0x70000,
+-                    memBase = self.AxilBridge.proxy,
+-                    enabled = False, # enabled=False because I2C are slow transactions and might "log jam" register transaction pipeline
+-                ))
+-
+     def _start(self):
+         super()._start()
+         if not (self.sim) and (self.startArmed):
+Submodule firmware/submodules/lcls-timing-core contains modified content
+diff --git a/firmware/submodules/lcls-timing-core/python/LclsTimingCore/GthRxAlignCheck.py b/firmware/submodules/lcls-timing-core/python/LclsTimingCore/GthRxAlignCheck.py
+index 9fae0a4..7b5d634 100644
+--- a/firmware/submodules/lcls-timing-core/python/LclsTimingCore/GthRxAlignCheck.py
++++ b/firmware/submodules/lcls-timing-core/python/LclsTimingCore/GthRxAlignCheck.py
+@@ -117,3 +117,13 @@ class GthRxAlignCheck(pr.Device):
+             linkedGet    = lambda: self.RxClkFreqRaw.value() * 1.0e-6,
+             disp         = '{:0.3f}',
+         ))
++
++        self.add(pr.RemoteVariable(
++            name        = "Locked",
++            description = 'If True, align checker successfully aligned the transceiver',
++            offset      = 0x110,
++            bitSize     = 1,
++            bitOffset   = 0,
++            mode        = 'RO',
++            base        = pr.Bool,
++        ))
+Submodule firmware/submodules/surf contains modified content
+diff --git a/firmware/submodules/surf/python/surf/devices/transceivers/_Qsfp.py b/firmware/submodules/surf/python/surf/devices/transceivers/_Qsfp.py
+index 6ac1caf29..8606029c7 100644
+--- a/firmware/submodules/surf/python/surf/devices/transceivers/_Qsfp.py
++++ b/firmware/submodules/surf/python/surf/devices/transceivers/_Qsfp.py
+@@ -1,7 +1,7 @@
+ #-----------------------------------------------------------------------------
+ # Description:
+ #
+-# Based on SFF-8636 Rev Rev 2.10a (24SEPT2019)
++# Based on SFF-8636 Rev Rev 2.11 (03JAN2023)
+ # https://members.snia.org/document/dl/26418
+ #
+ #-----------------------------------------------------------------------------
+@@ -15,24 +15,240 @@
+ #-----------------------------------------------------------------------------
+ 
+ import pyrogue as pr
++import rogue.interfaces.memory as rim
++
++import threading
++import queue
+ 
+ from surf.devices import transceivers
+ 
+ class Qsfp(pr.Device):
+-    def __init__(self,**kwargs):
++    def __init__(self, advDebug=False, **kwargs):
+         super().__init__(**kwargs)
+ 
+         ################
+         # Lower Page 00h
+         ################
+ 
++        self.add(pr.RemoteVariable(
++            name         = 'Identifier',
++            description  = 'Type of serial transceiver',
++            offset       = (0 << 2),
++            bitSize      = 5,
++            mode         = 'RO',
++            enum         = transceivers.IdentifierDict,
++        ))
++
++        if advDebug:
++
++            self.add(pr.RemoteVariable(
++                name         = 'RevisionCompliance',
++                description  = 'SFF-8636 revision compliance',
++                offset       = (1 << 2),
++                bitSize      = 8,
++                mode         = 'RO',
++                enum         = {
++                    0x00: 'Revision not specified. Do not use for SFF-8636 rev 2.5 or higher.',
++                    0x01: 'SFF-8436 Rev 4.8 or earlier',
++                    0x02: 'Includes functionality described in revision 4.8 or earlier of SFF-8436, except that this byte and Bytes 186-189 are as defined in this document',
++                    0x03: 'SFF-8636 Rev 1.3 or earlier',
++                    0x04: 'SFF-8636 Rev 1.4',
++                    0x05: 'SFF-8636 Rev 1.5',
++                    0x06: 'SFF-8636 Rev 2.0',
++                    0x07: 'SFF-8636 Rev 2.5, 2.6 and 2.7',
++                    0x08: 'SFF-8636 Rev 2.8, 2.9 and 2.10',
++                    0xFF: 'Reserved',
++                },
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'Flat_mem',
++                description  = 'Upper memory flat or paged',
++                offset       = (2 << 2),
++                bitSize      = 1,
++                bitOffset    = 2,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IntL',
++                description  = 'Digital state of the IntL Interrupt output pin',
++                offset       = (2 << 2),
++                bitSize      = 1,
++                bitOffset    = 1,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'Data_Not_Ready',
++                description  = 'Indicates free-side does not yet have valid monitor data. The bit remains high until valid data can be read at which time the bit goes low.',
++                offset       = (2 << 2),
++                bitSize      = 1,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTxLos',
++                description  = 'Interrupt flags for TX LOS',
++                offset       = (3 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedRxLos',
++                description  = 'Interrupt flags for RX LOS',
++                offset       = (3 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTxAdaptEqFault',
++                description  = 'Interrupt flags for TX Adapt EQ Fault',
++                offset       = (4 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedRxFault',
++                description  = 'Interrupt flags for TX Transmitter/Laser fault indicator',
++                offset       = (4 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTxCdrLol',
++                description  = 'Interrupt flags for TX CDR LOL indicator',
++                offset       = (5 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedRxCdrLol',
++                description  = 'Interrupt flags for RX CDR LOL indicator',
++                offset       = (5 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTempHighAlarm',
++                description  = 'Interrupt flags for high-temperature alarm',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 7,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTempLowAlarm',
++                description  = 'Interrupt flags for low-temperature alarm',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 6,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTempHighWarning',
++                description  = 'Interrupt flags for high-temperature warning',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 5,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedTempLowWarning',
++                description  = 'Interrupt flags for low-temperature warning',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'TcReadinessFlag',
++                description  = 'Asserted (one) after TC has stabilized. Returns to zero when read',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 1,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'InitComplete',
++                description  = 'Asserted (one) after initialization and/or reset has completed. Returns to zero when read.',
++                offset       = (6 << 2),
++                bitSize      = 1,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedVccHighAlarm',
++                description  = 'Interrupt flags for high supply voltage alarm',
++                offset       = (7 << 2),
++                bitSize      = 1,
++                bitOffset    = 7,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedVccLowAlarm',
++                description  = 'Interrupt flags for low supply voltage alarm',
++                offset       = (7 << 2),
++                bitSize      = 1,
++                bitOffset    = 6,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedVccHighWarning',
++                description  = 'Interrupt flags for high supply voltage alarm',
++                offset       = (7 << 2),
++                bitSize      = 1,
++                bitOffset    = 5,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'LatchedVccLowWarning',
++                description  = 'Interrupt flags for low supply voltage alarm',
++                offset       = (7 << 2),
++                bitSize      = 1,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++        # 8 All Vendor Specific
++
++        ###############################################################
++        # TODO: Add registers 9 ~ 14
++        ###############################################################
++
++        # 15-16 All Reserved Reserved channel monitor flags, set 4
++        # 17-18 All Reserved Reserved channel monitor flags, set 5
++        # 19-21 All Vendor Specific
++
+         self.addRemoteVariables(
+-            name         = 'DevMon',
+-            description  = 'Diagnostic Monitor Data',
++            name         = 'TemperatureRaw',
++            description  = 'Internally measured temperature',
+             offset       = (22 << 2),
+             bitSize      = 8,
+             mode         = 'RO',
+-            number       = 6,
++            number       = 2, # BYTE22:BYTE23
+             stride       = 4,
+             hidden       = True,
+         )
+@@ -44,9 +260,22 @@ class Qsfp(pr.Device):
+             units        = 'degC',
+             linkedGet    = transceivers.getTemp,
+             disp         = '{:1.3f}',
+-            dependencies = [self.DevMon[0],self.DevMon[1]],
++            dependencies = [self.TemperatureRaw[0],self.TemperatureRaw[1]],
+         ))
+ 
++        # 24-25 All Reserved
++
++        self.addRemoteVariables(
++            name         = 'VccRaw',
++            description  = 'Internally measured temperature',
++            offset       = (26 << 2),
++            bitSize      = 8,
++            mode         = 'RO',
++            number       = 2, # BYTE26:BYTE27
++            stride       = 4,
++            hidden       = True,
++        )
++
+         self.add(pr.LinkVariable(
+             name         = 'Vcc',
+             description  = 'Internally measured supply voltage in transceiver',
+@@ -54,16 +283,19 @@ class Qsfp(pr.Device):
+             units        = 'V',
+             linkedGet    = transceivers.getVolt,
+             disp         = '{:1.3f}',
+-            dependencies = [self.DevMon[4],self.DevMon[5]],
++            dependencies = [self.VccRaw[0],self.VccRaw[1]],
+         ))
+ 
++        # 28-29 All Reserved
++        # 30-33 All Vendor Specific
++
+         self.addRemoteVariables(
+             name         = 'RxPwrRaw',
+             description  = 'Rx input power',
+             offset       = (34 << 2),
+             bitSize      = 8,
+             mode         = 'RO',
+-            number       = 8,
++            number       = 8, # BYTE34:BYTE41
+             stride       = 4,
+             hidden       = True,
+         )
+@@ -79,14 +311,13 @@ class Qsfp(pr.Device):
+                 dependencies = [self.RxPwrRaw[2*i+0],self.RxPwrRaw[2*i+1]],
+             ))
+ 
+-
+         self.addRemoteVariables(
+             name         = 'TxBiasRaw',
+             description  = 'Tx bias current',
+             offset       = (42 << 2),
+             bitSize      = 8,
+             mode         = 'RO',
+-            number       = 8,
++            number       = 8, # BYTE42:BYTE49
+             stride       = 4,
+             hidden       = True,
+         )
+@@ -108,7 +339,7 @@ class Qsfp(pr.Device):
+             offset       = (50 << 2),
+             bitSize      = 8,
+             mode         = 'RO',
+-            number       = 8,
++            number       = 8, # BYTE50:BYTE57
+             stride       = 4,
+             hidden       = True,
+         )
+@@ -124,129 +355,562 @@ class Qsfp(pr.Device):
+                 dependencies = [self.TxPwrRaw[2*i+0],self.TxPwrRaw[2*i+1]],
+             ))
+ 
+-        ################
+-        # Upper Page 00h
+-        ################
++        # 58-65 Reserved channel monitor set 4
++        # 66-73 Reserved channel monitor set 5
++        # 74-81 Vendor Specific
++        # 82-85 All Reserved
+ 
+         self.add(pr.RemoteVariable(
+-            name         = 'Identifier',
+-            description  = 'Type of serial transceiver',
+-            offset       = (128 << 2),
+-            bitSize      = 8,
+-            mode         = 'RO',
+-            enum         = transceivers.IdentifierDict,
++            name         = 'TxDisable',
++            description  = 'Tx_Disable bit that allows software disable of transmitters, Writing 1 disables the laser of the channel',
++            offset       = (86 << 2),
++            bitSize      = 4,
++            bitOffset    = 0,
++            mode         = 'RW',
++        ))
++
++        if advDebug:
++
++            for i in range(4):
++                self.add(pr.RemoteVariable(
++                    name         = f'RxRateSelect[{i}]',
++                    description  = f'Software rate select. Rx Channel {i} (refer Table 6-12 xN_Rate_Select with Extended Rate Selection)',
++                    offset       = (87 << 2),
++                    bitSize      = 2,
++                    bitOffset    = 2*i,
++                    mode         = 'RW',
++                    hidden       = True,
++                ))
++
++            for i in range(4):
++                self.add(pr.RemoteVariable(
++                    name         = f'TxRateSelect[{i}]',
++                    description  = f'Software rate select. Tx Channel {i} (refer Table 6-12 xN_Rate_Select with Extended Rate Selection)',
++                    offset       = (88 << 2),
++                    bitSize      = 2,
++                    bitOffset    = 2*i,
++                    mode         = 'RW',
++                    hidden       = True,
++                ))
++
++        # 89-92 All Reserved (Prior to Rev 2.10 used for SFF-8079 – now deprecated.)
++
++        if advDebug:
++
++            self.add(pr.RemoteCommand(
++                name         = 'SoftReset',
++                description  = 'Software reset is a self-clearing bit that causes the module to be reset',
++                offset       = (93 << 2),
++                bitSize      = 1,
++                bitOffset    = 7,
++                function     = lambda cmd: cmd.post(1),
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'HighPowerClassEnable',
++                description  = 'Table 6-11 Truth table for enabling power classes (Page 00h Byte 93)',
++                offset       = (93 << 2),
++                bitSize      = 2,
++                bitOffset    = 2,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'PowerMode',
++                description  = 'Power set to low power mode: 1 sets to LP mode if PowerOverride is 1',
++                offset       = (93 << 2),
++                bitSize      = 1,
++                bitOffset    = 1,
++                mode         = 'RW',
++                base         = pr.Bool,
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'PowerOverride',
++                description  = '0: allows setting power mode with hardware, 1: allows setting power mode with software',
++                offset       = (93 << 2),
++                bitSize      = 1,
++                bitOffset    = 0,
++                mode         = 'RW',
++                base         = pr.Bool,
++            ))
++
++        # 94-97 All Reserved
++
++        self.add(pr.RemoteVariable(
++            name         = 'TxCdrEnable',
++            description  = 'Enable CDR for Tx lane[3:0]',
++            offset       = (98 << 2),
++            bitSize      = 4,
++            bitOffset    = 4,
++            mode         = 'RW',
+         ))
+ 
+         self.add(pr.RemoteVariable(
+-            name        = 'Connector',
+-            description = 'Code for connector type',
+-            offset      = (130 << 2),
+-            bitSize     = 8,
+-            mode        = 'RO',
+-            enum        = transceivers.ConnectorDict,
++            name         = 'RxCdrEnable',
++            description  = 'Enable CDR for Rx lane[3:0]',
++            offset       = (98 << 2),
++            bitSize      = 4,
++            bitOffset    = 0,
++            mode         = 'RW',
+         ))
+ 
+-        self.addRemoteVariables(
+-            name         = 'VendorNameRaw',
+-            description  = 'SFP vendor name (ASCII)',
+-            offset       = (148 << 2),
+-            bitSize      = 8,
+-            mode         = 'RO',
+-            base         = pr.String,
+-            number       = 16,
+-            stride       = 4,
+-            hidden       = True,
+-        )
++        if advDebug:
+ 
+-        self.add(pr.LinkVariable(
+-            name         = 'VendorName',
+-            description  = 'SFP vendor name (ASCII)',
+-            mode         = 'RO',
+-            linkedGet    = transceivers.parseStrArrayByte,
+-            dependencies = [self.VendorNameRaw[x] for x in range(16)],
+-        ))
++            self.add(pr.RemoteVariable(
++                name         = 'LPMode_TxDis_Pin',
++                description  = 'IntL/LOSL output signal control',
++                offset       = (99 << 2),
++                bitSize      = 1,
++                bitOffset    = 1,
++                mode         = 'RW',
++                enum         = {
++                    0x0: 'LPMode',
++                    0x1: 'TxDis',
++                },
++            ))
+ 
+-        self.addRemoteVariables(
+-            name         = 'VendorPnRaw',
+-            description  = 'Part number provided by SFP vendor (ASCII)',
+-            offset       = (168 << 2),
+-            bitSize      = 8,
+-            mode         = 'RO',
+-            base         = pr.String,
+-            number       = 16,
+-            stride       = 4,
+-            hidden       = True,
+-        )
++            self.add(pr.RemoteVariable(
++                name         = 'IntL_LOSL_Pin',
++                description  = 'IntL/LOSL output signal control',
++                offset       = (99 << 2),
++                bitSize      = 1,
++                bitOffset    = 0,
++                mode         = 'RW',
++                enum         = {
++                    0x0: 'IntL',
++                    0x1: 'LOSL',
++                },
++            ))
+ 
+-        self.add(pr.LinkVariable(
+-            name         = 'VendorPn',
+-            description  = 'Part number provided by SFP vendor (ASCII)',
+-            mode         = 'RO',
+-            linkedGet    = transceivers.parseStrArrayByte,
+-            dependencies = [self.VendorPnRaw[x] for x in range(16)],
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTxLosMask',
++                description  = 'Masking bits for TX LOS',
++                offset       = (100 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqRxLosMask',
++                description  = 'Masking bits for RX LOS',
++                offset       = (100 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTxAdaptEqFaultMask',
++                description  = 'Masking bits for TX Adapt EQ Fault',
++                offset       = (101 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqRxFaultMask',
++                description  = 'Masking bits for TX Transmitter/Laser fault indicator',
++                offset       = (101 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTxCdrLolMask',
++                description  = 'Masking bits for TX CDR LOL indicator',
++                offset       = (102 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqRxCdrLolMask',
++                description  = 'Masking bits for RX CDR LOL indicator',
++                offset       = (102 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTempHighAlarmMask',
++                description  = 'Masking bits for high-temperature alarm',
++                offset       = (103 << 2),
++                bitSize      = 1,
++                bitOffset    = 7,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTempLowAlarmMask',
++                description  = 'Masking bits for low-temperature alarm',
++                offset       = (103 << 2),
++                bitSize      = 1,
++                bitOffset    = 6,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTempHighWarningMask',
++                description  = 'Masking bits for high-temperature warning',
++                offset       = (103 << 2),
++                bitSize      = 1,
++                bitOffset    = 5,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqTempLowWarningMask',
++                description  = 'Masking bits for low-temperature warning',
++                offset       = (103 << 2),
++                bitSize      = 1,
++                bitOffset    = 4,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'TcReadinessFlagMask',
++                description  = 'Masking bit for TC readiness flag',
++                offset       = (103 << 2),
++                bitSize      = 1,
++                bitOffset    = 1,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqVccHighAlarmMask',
++                description  = 'Masking bits for high supply voltage alarm',
++                offset       = (104 << 2),
++                bitSize      = 1,
++                bitOffset    = 7,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqVccLowAlarmMask',
++                description  = 'Masking bits for low supply voltage alarm',
++                offset       = (104 << 2),
++                bitSize      = 1,
++                bitOffset    = 6,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqVccHighWarningMask',
++                description  = 'Masking bits for high supply voltage alarm',
++                offset       = (104 << 2),
++                bitSize      = 1,
++                bitOffset    = 5,
++                mode         = 'RW',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'IrqVccLowWarningMask',
++                description  = 'Masking bits for low supply voltage alarm',
++                offset       = (104 << 2),
++                bitSize      = 1,
++                bitOffset    = 4,
++                mode         = 'RW',
++            ))
++
++        # 105-106 Vendor Specific
++
++        if advDebug:
++
++            self.add(pr.RemoteVariable(
++                name         = 'MaxPowerConsumption',
++                description  = 'Maximum power consumption of module',
++                offset       = (107 << 2),
++                bitSize      = 8,
++                mode         = 'RO',
++                units        = '0.1W',
++            ))
++
++            self.addRemoteVariables(
++                name         = 'PropagationDelayRaw',
++                description  = 'propagation delay',
++                offset       = (108 << 2),
++                bitSize      = 8,
++                mode         = 'RO',
++                number       = 2, # BYTE108:BYTE109
++                stride       = 4,
++                hidden       = True,
++            )
++
++            self.add(pr.RemoteVariable(
++                name         = 'AdvLowPwrMode',
++                description  = 'The code indicates maximum power consumption less than 1.5 W',
++                offset       = (110 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++                enum         = {
++                    0x0: '1.5W or higher',
++                    0x1: 'no more than 1 W',
++                    0x2: 'no more than 0.75 W',
++                    0x3: 'no more than 0.5 W',
++                    0xF: 'UNDEFINED',
++                },
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'FarSideManaged',
++                description  = 'A value of 1 indicates that the far end is managed and complies with SFF-8636',
++                offset       = (110 << 2),
++                bitSize      = 1,
++                bitOffset    = 3,
++                mode         = 'RO',
++                base         = pr.Bool,
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'MinOperatingVoltage',
++                description  = 'The code indicates nominal supply voltages lower than 3.3 V.',
++                offset       = (110 << 2),
++                bitSize      = 3,
++                bitOffset    = 0,
++                mode         = 'RO',
++                enum         = {
++                    0x0: '3.3 V',
++                    0x1: '2.5 V',
++                    0x2: '1.8 V',
++                    0x7: 'UNDEFINED',
++                },
++            ))
++
++        # 111-112 Assigned for use by PCI Express
++
++        if advDebug:
++
++            self.add(pr.RemoteVariable(
++                name         = 'FarEndImpl',
++                description  = 'Far End Implementation',
++                offset       = (113 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++                enum         = {
++                    0x0: 'Far end is unspecified',
++                    0x1: 'Cable with single far-end with 4 channels implemented, or separable module with a 4-channel connector',
++                    0x2: 'Cable with single far-end with 2 channels implemented, or separable module with a 2-channel connector',
++                    0x3: 'Cable with single far-end with 1 channel implemented, or separable module with a 1-channel connector',
++                    0x4: '4 far-ends with 1 channel implemented in each (i.e. 4x1 break out)',
++                    0x5: '2 far-ends with 2 channels implemented in each (i.e. 2x2 break out)',
++                    0x6: '2 far-ends with 1 channel implemented in each (i.e. 2x1 break out)',
++                    0xF: 'UNDEFINED',
++                },
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'NearEndImpl',
++                description  = 'Near End Implementation Bit Mask (1: implemented, 0: Not implemented)',
++                offset       = (113 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'Tx_TurnOn_MaxDuration',
++                description  = 'Tx_TurnOn_MaxDuration for microQSFP MSA (0000b=Not implemented)',
++                offset       = (114 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'DataPathInit_MaxDuration',
++                description  = 'DataPathInit_MaxDuration for microQSFP MSA (0000b=Not implemented)',
++                offset       = (114 << 2),
++                bitSize      = 4,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'ModSelL_wait_time_exponent',
++                description  = 'The ModSelL wait time is the mantissa x 2^exponent expressed in microseconds. (0=Not implemented)',
++                offset       = (115 << 2),
++                bitSize      = 3,
++                bitOffset    = 5,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'ModSelL_wait_time_mantissa',
++                description  = 'The ModSelL wait time is the mantissa x 2^exponent expressed in microseconds. (0=Not implemented)',
++                offset       = (115 << 2),
++                bitSize      = 5,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'SecondExtSpecCompliance',
++                description  = 'Secondary Extended Specification Compliance Codes (See SFF-8024 Transceiver Management)',
++                offset       = (116 << 2),
++                bitSize      = 8,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++
++            self.add(pr.RemoteVariable(
++                name         = 'TransceiverSubtype',
++                description  = 'Transceiver Sub-type code (See SFF-8024 Transceiver Management)',
++                offset       = (117 << 2),
++                bitSize      = 4,
++                bitOffset    = 4,
++                mode         = 'RO',
++            ))
++
++            self.add(pr.RemoteVariable(
++                name         = 'FiberFaceType',
++                description  = 'Fiber Face Type code (See SFF-8024 Transceiver Management)',
++                offset       = (117 << 2),
++                bitSize      = 2,
++                bitOffset    = 0,
++                mode         = 'RO',
++            ))
++
++        # 118 118 Reserved
++        # 119 122 Optional Password Change
++        # 123 126 Optional Password Entry
++
++
++        # 127 127 Page Select Byte
++        self.add(_UpperPageProxy(
++            name     = 'UpperPageProxy',
++            memBase  = self,
++            offset   = 0x0000,
++            hidden   = True,
+         ))
++        self.proxy = _ProxySlave(self.UpperPageProxy)
+ 
+-        self.addRemoteVariables(
+-            name         = 'VendorRevRaw',
+-            description  = 'Revision level for part number provided by vendor (ASCII)',
+-            offset       = (184 << 2),
+-            bitSize      = 8,
+-            mode         = 'RO',
+-            base         = pr.String,
+-            number       = 2,
+-            stride       = 4,
+-            hidden       = True,
+-        )
++        self.add(transceivers.QsfpUpperPage00h(
++            name     = 'UpperPage00h',
++            memBase  = self.proxy,
++            advDebug = advDebug,
++            offset   = (0+1)<<10, # Page00 plus 1 mem addres region offset
++        ))
+ 
+-        self.add(pr.LinkVariable(
+-            name         = 'VendorRev',
+-            description  = 'Revision level for part number provided by vendor (ASCII)',
+-            mode         = 'RO',
+-            linkedGet    = transceivers.parseStrArrayByte,
+-            dependencies = [self.VendorRevRaw[x] for x in range(2)],
++        self.add(transceivers.QsfpUpperPage03h(
++            name     = 'UpperPage03h',
++            memBase  = self.proxy,
++            advDebug = advDebug,
++            offset   = (3+1)<<10, # Page03 plus 1 mem addres region offset
+         ))
+ 
+-        self.addRemoteVariables(
+-            name         = 'VendorSnRaw',
+-            description  = 'Serial number provided by vendor (ASCII)',
+-            offset       = (196 << 2),
++    def add(self, node):
++        pr.Node.add(self, node)
++
++        if isinstance(node, pr.Device):
++            if node._memBase is None:
++                node._setSlave(self.proxy)
++
++#################################################
++#               Upper Page Proxy
++#################################################
++class _UpperPageProxy(pr.Device):
++    def __init__(self, **kwargs):
++        super().__init__(**kwargs)
++
++        self._queue = queue.Queue()
++        self._pollThread = threading.Thread(target=self._pollWorker)
++        self._pollThread.start()
++
++        self._armed = False
++
++        self.add(pr.RemoteVariable(
++            name         = 'PageSelectByte',
++            description  = 'Byte 127 is used to select the upper page',
++            offset       = (127 << 2),
+             bitSize      = 8,
+-            mode         = 'RO',
+-            base         = pr.String,
+-            number       = 16,
+-            stride       = 4,
++            mode         = 'WO',
+             hidden       = True,
+-        )
+-
+-        self.add(pr.LinkVariable(
+-            name         = 'VendorSn',
+-            description  = 'Serial number provided by vendor (ASCII)',
+-            mode         = 'RO',
+-            linkedGet    = transceivers.parseStrArrayByte,
+-            dependencies = [self.VendorSnRaw[x] for x in range(16)],
++            groups        = ['NoStream','NoState','NoConfig'],
+         ))
+ 
+-        self.addRemoteVariables(
+-            name         = 'DateCode',
+-            description  = 'Vendor\'s manufacturing date code (ASCII)',
+-            offset       = (212 << 2),
+-            bitSize      = 8,
+-            mode         = 'RO',
+-            number       = 6,
+-            stride       = 4,
+-            base         = pr.String,
++        self.add(pr.RemoteVariable(
++            name        = 'UpperPage',
++            offset      = (128 << 2),
++            mode        = 'RW',
++            numValues   = 128, # Upper Page has 128 register offset
++            valueBits   = 8,   # Only 8b data values
++            valueStride = 32,  # 32b AXI-Lite word stride
++            updateNotify= False,
++            bulkOpEn    = False,
+             hidden      = True,
+-        )
+-
+-        self.add(pr.LinkVariable(
+-            name         = 'ManufactureDate',
+-            description  = 'Vendor\'s manufacturing date code (ASCII)',
+-            mode         = 'RO',
+-            linkedGet    = transceivers.getDate,
+-            dependencies = [self.DateCode[x] for x in [0,1,4,5,2,3] ],
++            verify      = False, # Do not verify because some upper page are RO
++            groups      = ['NoStream','NoState','NoConfig'],
+         ))
+ 
+-        ###############################################################
+-        # TODO: Need to add the ability in the future to use
+-        # Page Select Byte (address=127) for other optional page access
+-        ###############################################################
++    def proxyTransaction(self, transaction):
++        self._queue.put(transaction)
++
++    def _pollWorker(self):
++        while True:
++            #print('Main thread loop start')
++            transaction = self._queue.get()
++            if transaction is None:
++                return
++            with self._memLock, transaction.lock():
++
++                # Determine the page select and register index
++                pageSelect = ((transaction.address()>>10)&0xFF)-1
++                regIndex   = ((transaction.address()>>2)&0xFF)-128
++
++                # Check if the page select has changed
++                if (self.PageSelectByte.value() != pageSelect) or not self._armed:
++
++                    # Set the flag
++                    self._armed = True
++
++                    # Perform the hardware write
++                    self.PageSelectByte.set(value=pageSelect, write=True)
++
++                # Check for a write or post TXN
++                if (transaction.type() == rim.Write) or (transaction.type() == rim.Post):
++
++                    # Convert from TXN.data to the write byte array
++                    dataBa = bytearray(4)
++                    transaction.getData(dataBa, 0)
++                    data = int.from_bytes(dataBa, 'little', signed=False)
++
++                    # Perform the hardware write
++                    self.UpperPage.set(index=regIndex, value=data, write=True)
++
++                    # Close out the transaction
++                    transaction.done()
++
++                # Else this is a read or verify TXN
++                else:
++
++                    # Perform the hardware read
++                    data = self.UpperPage.get(index=regIndex, read=True)
++
++                    # Convert from write byte array to TXN.data to the
++                    dataBa = bytearray(data.to_bytes(4, 'little', signed=False))
++                    transaction.setData(dataBa, 0)
++
++                    # Close out the transaction
++                    transaction.done()
++
++    def _stop(self):
++        self._queue.put(None)
++        self._pollThread.join()
++
++class _ProxySlave(rim.Slave):
++
++    def __init__(self, UpperPageProxy):
++        super().__init__(4,4)
++        self._UpperPageProxy = UpperPageProxy
++
++    def _doTransaction(self, transaction):
++        self._UpperPageProxy.proxyTransaction(transaction)
+diff --git a/firmware/submodules/surf/python/surf/devices/transceivers/__init__.py b/firmware/submodules/surf/python/surf/devices/transceivers/__init__.py
+index d96db8b4e..ff1b6e8a9 100644
+--- a/firmware/submodules/surf/python/surf/devices/transceivers/__init__.py
++++ b/firmware/submodules/surf/python/surf/devices/transceivers/__init__.py
+@@ -8,65 +8,74 @@
+ ## the terms contained in the LICENSE.txt file.
+ ##############################################################################
+ from surf.devices.transceivers._Sfp  import *
++from surf.devices.transceivers._QsfpUpperPage00h import *
++from surf.devices.transceivers._QsfpUpperPage03h import *
+ from surf.devices.transceivers._Qsfp import *
+ 
+ import math
+ 
+ # Can't use SparseString + bulk memory read if there is a AXI-Lite Proxy
+ # So recoded using 4 byte transactions + this get function
+-def parseStrArrayByte(var):
+-    retVar = ''
+-    for x in range(len(var.dependencies)):
+-        retVar += var.dependencies[x].value()
++def parseStrArrayByte(dev, var, read):
++    with dev.root.updateGroup():
++        retVar = ''
++        for x in range(len(var.dependencies)):
++            retVar += var.dependencies[x].get(read=read)
+     return retVar
+ 
+ # Used to decode the "dateCode" variable
+-def getDate(var):
+-    year  = '20' + var.dependencies[0].value() + var.dependencies[1].value()
+-    month = var.dependencies[2].value() + var.dependencies[3].value()
+-    day   = var.dependencies[4].value() + var.dependencies[5].value()
+-    # Check if not empty or blank string
+-    if month.strip() and day.strip():
+-        return f'{month}/{day}/{year}'
+-
+-def getTemp(var):
+-    msb = var.dependencies[0].value()
+-    lsb = var.dependencies[1].value()
+-    raw = (msb << 8) | lsb
+-    # Return value in units of degC
+-    return float(raw)/256.0
+-
+-def getVolt(var):
+-    msb = var.dependencies[0].value()
+-    lsb = var.dependencies[1].value()
+-    raw = (msb << 8) | lsb
+-    # Return value in units of Volts
+-    return float(raw)*100.0E-6
+-
+-def getTxBias(var):
+-    msb = var.dependencies[0].value()
+-    lsb = var.dependencies[1].value()
+-    raw = (msb << 8) | lsb
+-    # Return value in units of mA
+-    return float(raw)*0.002
+-
+-def getOpticalPwr(var):
+-    msb = var.dependencies[0].value()
+-    lsb = var.dependencies[1].value()
+-    raw = (msb << 8) | lsb
+-    if raw == 0:
+-        pwr = 0.0001 # Prevent log10(zero) case
+-    else:
+-        pwr = float(raw)*0.0001 # units of mW
+-    # Return value in units of dBm
+-    return 10.0*math.log10(pwr)
+-
+-def getTec(var):
+-    msb = var.dependencies[0].value()
+-    lsb = var.dependencies[1].value()
+-    raw = (msb << 8) | lsb
+-    # Return value in units of mA
+-    return float(raw)*0.1
++def getDate(dev, var, read):
++    with dev.root.updateGroup():
++        year  = '20' + var.dependencies[0].get(read=read) + var.dependencies[1].get(read=read)
++        month = var.dependencies[2].get(read=read) + var.dependencies[3].get(read=read)
++        day   = var.dependencies[4].get(read=read) + var.dependencies[5].get(read=read)
++        # Check if not empty or blank string
++        if month.strip() and day.strip():
++            return f'{month}/{day}/{year}'
++
++def getTemp(dev, var, read):
++    with dev.root.updateGroup():
++        msb = var.dependencies[0].get(read=read)
++        lsb = var.dependencies[1].get(read=read)
++        raw = (msb << 8) | lsb
++        # Return value in units of degC
++        return float(raw)/256.0
++
++def getVolt(dev, var, read):
++    with dev.root.updateGroup():
++        msb = var.dependencies[0].get(read=read)
++        lsb = var.dependencies[1].get(read=read)
++        raw = (msb << 8) | lsb
++        # Return value in units of Volts
++        return float(raw)*100.0E-6
++
++def getTxBias(dev, var, read):
++    with dev.root.updateGroup():
++        msb = var.dependencies[0].get(read=read)
++        lsb = var.dependencies[1].get(read=read)
++        raw = (msb << 8) | lsb
++        # Return value in units of mA
++        return float(raw)*0.002
++
++def getOpticalPwr(dev, var, read):
++    with dev.root.updateGroup():
++        msb = var.dependencies[0].get(read=read)
++        lsb = var.dependencies[1].get(read=read)
++        raw = (msb << 8) | lsb
++        if raw == 0:
++            pwr = 0.0001 # Prevent log10(zero) case
++        else:
++            pwr = float(raw)*0.0001 # units of mW
++        # Return value in units of dBm
++        return 10.0*math.log10(pwr)
++
++def getTec(dev, var, read):
++    with dev.root.updateGroup():
++        msb = var.dependencies[0].get(read=read)
++        lsb = var.dependencies[1].get(read=read)
++        raw = (msb << 8) | lsb
++        # Return value in units of mA
++        return float(raw)*0.1
+ 
+ ##############################################################################
+ # Dictionaries based on SFF-8024 Rev 4.9 (24MAY2021)
+@@ -104,8 +113,13 @@ IdentifierDict = {
+     0x1C: 'MiniLinkx4',
+     0x1D: 'MiniLinkx8',
+     0x1E: 'QSFP+',
++    0x1F: 'SFP-DD',
+ }
+ 
++# Fill 0x20 through 0xFF with 'Undefined'
++for code in range(0x20, 0x100):  # 0x100 is 256 (exclusive)
++    IdentifierDict[code] = 'Undefined'
++
+ ExtIdentifierDict = {
+     0x00: 'Unspecified',
+     0x01: '100G AOC (Active Optical Cable) or 25GAUI C2M AOC',
+@@ -171,6 +185,10 @@ ExtIdentifierDict = {
+     0x81: 'Capable of 128GFC',
+ }
+ 
++# Fill 0x82 through 0xFF with 'Undefined'
++for code in range(0x82, 0x100):  # 0x100 is 256 (exclusive)
++    ExtIdentifierDict[code] = 'Undefined'
++
+ ConnectorDict = {
+     0x00: 'Unspecified',
+     0x01: 'SC',
+@@ -197,6 +215,10 @@ ConnectorDict = {
+     0x28: 'MPO 1x16',
+ }
+ 
++# Fill 0x29 through 0xFF with 'Undefined'
++for code in range(0x29, 0x100):  # 0x100 is 256 (exclusive)
++    ConnectorDict[code] = 'Undefined'
++
+ EncodingDict = {
+     0x0: 'Unspecified',
+     0x1: '8B10B',
+@@ -207,6 +229,10 @@ EncodingDict = {
+     0x6: '64B/66B',
+ }
+ 
++# Fill 0x7 through 0xF with 'Undefined'
++for code in range(0x7, 0x10):  # 0x10 is 16 (exclusive)
++    EncodingDict[code] = 'Undefined'
++
+ RateIdDict = {
+     0x0: 'Unspecified',
+     0x1: 'SFF-8079 (4/2/1G Rate Select and AS0/AS1)',
+@@ -219,4 +245,8 @@ RateIdDict = {
+     0x8: 'FC-PI-5 (16/8/4G RX Rate Select Only) High=16G, Low=8/4G',
+     0x9: 'Unspecified',
+     0xA: 'FC-PI-5 (16/8/4G Independent TX and RX Rate Select) High=16G, Low=8/4G',
+-},
+\ No newline at end of file
++}
++
++# Fill 0xB through 0xF with 'Undefined'
++for code in range(0xB, 0x10):  # 0x10 is 16 (exclusive)
++    RateIdDict[code] = 'Undefined'
