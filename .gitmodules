@@ -40,3 +40,6 @@
 [submodule "epixuhr-3x2-readout-testing"]
 	path = epixuhr-3x2-readout-testing
 	url = git@github.com:slaclab/epixuhr-3x2-readout-testing.git
+[submodule "pgp-pcie-apps"]
+	path = pgp-pcie-apps
+	url = git@github.com:slaclab/pgp-pcie-apps
