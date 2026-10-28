@@ -23,23 +23,9 @@ sed -i "s/^rogue.Version.minVersion('6.4.0')/#rogue.Version.minVersion('6.4.0')/
           cameralink-gateway/firmware/python/cameralink_gateway/_ClinkDevRoot.py
 sed -i "s/ZmqServer(root=self, addr='127.0.0.1', port=10000)/ZmqServer(root=self, addr='127.0.0.1', port=0)/" \
 	  l2si-drp/firmware/python/l2si_drp/_Root.py
-sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/" \
-          epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/_Root.py
-sed -i "s/^rogue.Version.minVersion('6.6.2')/rogue.Version.minVersion('6.1.3')/" \
-          epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/Uhr3x2ReadoutSystem/_Uhr3x2ReadoutSystem.py
 
-# Further ePixUHR3x2 -- Python 3.10 incompatibilties
-sed -Ei 's/^(def get_carrier_name\(serial_number: int\)) -> .*$/\1:/'                           \
-    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
-sed -Ei 's/^(def get_carrier_id\(serial_number: int\)) -> .*$/\1:/'                             \
-    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
-sed -Ei 's/^(def get_carrier_doc_url\(serial_number: int\)) -> .*$/\1:/'                        \
-    epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/carrier_hwdb.py
+# ePixUHR3x2 has a bigger set of changes (Python 3.10, rogue 6.15 with Float16 support)
+# -- Apply it has a patch file
 
-sed -Ei 's/^(def get_readout_name\(serial_number: int\)) -> .*$/\1:/'                           \
-        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
-sed -Ei 's/^(def get_readout_id\(serial_number: int\)) -> .*$/\1:/'                             \
-        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
-sed -Ei 's/^(def get_readout_doc_url\(serial_number: int\)) -> .*$/\1:/'                        \
-        epixuhr-3x2-readout-testing/firmware/python/epixuhr_3x2_readout_testing/readout_hwdb.py
-
+cd epixuhr-3x2-readout-testing
+git apply --ignore-whitespace ../rogue_patches/epixuhr3x2_v5.1.0.patch
